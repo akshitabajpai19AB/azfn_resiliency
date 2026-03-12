@@ -1,0 +1,192 @@
+## Source Job: https://jenkins.albertsons.com/job/esfn/job/azfn-fnapp-create/
+name: ESFN-azfn-fnapp-create
+
+on:
+  workflow_dispatch:
+    inputs:
+      tf_resource_json:
+        description: 'Please provide input in json format'
+        required: true
+
+jobs:
+  #####################################################################
+  # ➕ ADDED: Prep job to build dynamic matrix from JSON regions keys
+  #####################################################################
+  prep:
+    runs-on: [ K8S ]
+    outputs:
+      matrix: ${{ steps.mk.outputs.matrix }}
+      environment: ${{ steps.mk.outputs.environment }}
+      appcode: ${{ steps.mk.outputs.appcode }}
+      appname: ${{ steps.mk.outputs.appname }}
+    steps:
+      - name: Code check out
+        uses: actions/checkout@v2
+
+      - name: Setup Terraform
+        uses: albertsons/esgh-terraform-setup@master
+
+      - name: write input file
+        uses: albertsons/esgh-file-write-action@master
+        with:
+          path: ${{ github.workspace }}/input.json
+          contents: |
+            ${{ github.event.inputs.tf_resource_json }}
+          write-mode: overwrite
+
+      ### ✅ CHANGED: Build matrix from .regions keys (N regions)
+      ### ✅ CHANGED: Use GITHUB_OUTPUT (set-output deprecated)
+      - name: Build matrix from JSON
+        id: mk
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat "${{ github.workspace }}/input.json"
+
+          # Requires jq on the runner
+          ENVIRONMENT="$(jq -r '.environment' "${{ github.workspace }}/input.json")"
+          APPCODE="$(jq -r '.appcode' "${{ github.workspace }}/input.json")"
+          APPNAME="$(jq -r '.appname' "${{ github.workspace }}/input.json")"
+
+          # matrix = {"region":["westus2","westus",...]}
+          MATRIX="$(jq -c '{region: (.regions | keys)}' "${{ github.workspace }}/input.json")"
+
+          echo "environment=${ENVIRONMENT}" >> "${GITHUB_OUTPUT}"
+          echo "appcode=${APPCODE}" >> "${GITHUB_OUTPUT}"
+          echo "appname=${APPNAME}" >> "${GITHUB_OUTPUT}"
+          echo "matrix=${MATRIX}" >> "${GITHUB_OUTPUT}"
+
+          echo "MATRIX=${MATRIX}"
+
+
+  #####################################################################
+  # ✅ CHANGED: Matrix job – one region = one terraform run = one state
+  #####################################################################
+  azfnapp-TF-Init:
+    runs-on: [ K8S ]
+    needs: [ prep ]
+
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prep.outputs.matrix) }}
+
+    steps:
+    - name: Code check out
+      uses: actions/checkout@v2
+
+    - name: Setup Terraform
+      uses: albertsons/esgh-terraform-setup@master
+
+    - name: write input file
+      uses: albertsons/esgh-file-write-action@master
+      with:
+        path: ${{ github.workspace }}/input.json
+        contents: |
+           ${{ github.event.inputs.tf_resource_json }}
+        write-mode: overwrite
+
+    #####################################################################
+    # ❌ REMOVED: Your original Parse JSON + parse2 extracting fnname/location
+    # Reason: In N-region design, fnname/location are inside regions[<key>]
+    #####################################################################
+
+    - name: write nonprod az sp to file
+      uses: albertsons/esgh-file-write-action@master
+      with:
+        path: ${{ github.workspace }}/secrets.auto.tfvars_nonprod.json
+        contents: ${{ secrets.AZ_SP_ESCO_NONPROD }}
+        write-mode: overwrite
+
+    - name: write nonprod az backend to file
+      uses: albertsons/esgh-file-write-action@master
+      with:
+        path: ${{ github.workspace }}/backend_nonprod.json
+        contents: ${{ secrets.AZ_BACKEND_ESCO_NONPROD }}
+        write-mode: overwrite
+
+    - name: write prod az sp to file
+      uses: albertsons/esgh-file-write-action@master
+      with:
+        path: ${{ github.workspace }}/secrets.auto.tfvars_prod.json
+        contents: ${{ secrets.AZ_SP_ESCO_PROD }}
+        write-mode: overwrite
+
+    - name: write prod az backend to file
+      uses: albertsons/esgh-file-write-action@master
+      with:
+        path: ${{ github.workspace }}/backend_prod.json
+        contents: ${{ secrets.AZ_BACKEND_ESCO_PROD }}
+        write-mode: overwrite
+
+    #####################################################################
+    # ➕ ADDED: Create region-scoped tfvars JSON
+    # This makes Terraform deploy only ONE function app per job
+    #####################################################################
+    - name: Create region-scoped variables file
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        REGION="${{ matrix.region }}"
+        echo "Deploying region: ${REGION}"
+
+        # Create per-region JSON payload by keeping only this region under .regions
+        jq --arg r "${REGION}" '
+          .regions = { ($r): .regions[$r] }
+        ' "${{ github.workspace }}/input.json" > "${{ github.workspace }}/region.json"
+
+        echo "Region payload:"
+        cat "${{ github.workspace }}/region.json"
+
+    #####################################################################
+    # ✅ CHANGED: terraform init state key per functionapp
+    #####################################################################
+    - name: azfnapp tf init
+      shell: bash
+      run: |
+          set -euo pipefail
+
+          REGION="${{ matrix.region }}"
+
+          # Read global vars from region payload
+          ENVIRONMENT="$(jq -r '.environment' "${{ github.workspace }}/region.json")"
+          APPCODE="$(jq -r '.appcode' "${{ github.workspace }}/region.json")"
+          APPNAME="$(jq -r '.appname' "${{ github.workspace }}/region.json")"
+
+          # Read function app name from this region block
+          FUNCNAME="$(jq -r --arg r "${REGION}" '.regions[$r].function_app_name' "${{ github.workspace }}/region.json")"
+
+          # Move region payload to TF auto vars in the root folder (same pattern as before)
+          mv "${{ github.workspace }}/region.json" "${{ github.workspace }}/esfn-azfun/azfnapp/variables.auto.tfvars.json"
+          mv "${{ github.workspace }}/backend_${ENVIRONMENT}.json" "${{ github.workspace }}/esfn-azfun/azfnapp/backend.json"
+          mv "${{ github.workspace }}/secrets.auto.tfvars_${ENVIRONMENT}.json" "${{ github.workspace }}/esfn-azfun/azfnapp/secrets.auto.tfvars.json"
+
+          cd "${{ github.workspace }}/esfn-azfun/azfnapp"
+          ls -ltr
+          cat variables.auto.tfvars.json
+
+          ### ✅ CHANGED: 1 STATE FILE PER FUNCTION APP
+          TERRAFORM_STATE_KEY="esfn/${ENVIRONMENT}/${APPCODE}/${APPNAME}/azfnapp/${REGION}/${FUNCNAME}/terraform.tfstate"
+
+          terraform init -input=false \
+            -backend-config="backend.json" \
+            -backend-config="key=${TERRAFORM_STATE_KEY}"
+
+    - name: azfnapp tf plan
+      continue-on-error: true
+      id: plan
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd ${{ github.workspace }}/esfn-azfun/azfnapp
+        terraform plan -input=false -out=tfplan > tf-file.plan
+
+    - name: tf apply
+      continue-on-error: true
+      id: Apply
+      shell: bash
+      run: |
+          set -euo pipefail
+          cd ${{ github.workspace }}/esfn-azfun/azfnapp && ls -lrt
+          terraform apply -auto-approve -input=false tfplan
