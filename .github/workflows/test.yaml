@@ -1,0 +1,247 @@
+## Source Job: https://jenkins.albertsons.com/job/esfn/job/azfn-fnapp-create/
+name: ESFN-azfn-fnapp-create-test
+
+on:
+  workflow_dispatch:
+    inputs:
+      tf_resource_json:
+        description: 'Please provide input in json format'
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  TF_DIR: linux
+  TFLINT_VERSION: v0.50.3
+
+jobs:
+  #####################################################################
+  # ➕ Prep job to build dynamic matrix from JSON regions keys
+  #####################################################################
+  prep:
+    runs-on: [ self-hosted, linux ]
+    outputs:
+      matrix: ${{ steps.mk.outputs.matrix }}
+      environment: ${{ steps.mk.outputs.environment }}
+      appcode: ${{ steps.mk.outputs.appcode }}
+      appname: ${{ steps.mk.outputs.appname }}
+    steps:
+      - name: Code check out
+        uses: actions/checkout@v4
+
+      - name: Validate tooling (jq + terraform)
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v jq >/dev/null 2>&1 || { echo "jq not found on runner"; exit 1; }
+          command -v terraform >/dev/null 2>&1 || { echo "terraform not found on runner"; exit 1; }
+          jq --version
+          terraform version
+
+      - name: Write input file
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "${{ github.workspace }}/input.json" << 'EOF'
+          ${{ github.event.inputs.tf_resource_json }}
+          EOF
+
+          echo "Input payload:"
+          cat "${{ github.workspace }}/input.json"
+
+      - name: Build matrix from JSON
+        id: mk
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ENVIRONMENT="$(jq -r '.environment' "${{ github.workspace }}/input.json")"
+          APPCODE="$(jq -r '.appcode' "${{ github.workspace }}/input.json")"
+          APPNAME="$(jq -r '.appname' "${{ github.workspace }}/input.json")"
+
+          MATRIX="$(jq -c '{region: (.regions | keys)}' "${{ github.workspace }}/input.json")"
+
+          echo "environment=${ENVIRONMENT}" >> "${GITHUB_OUTPUT}"
+          echo "appcode=${APPCODE}" >> "${GITHUB_OUTPUT}"
+          echo "appname=${APPNAME}" >> "${GITHUB_OUTPUT}"
+          echo "matrix=${MATRIX}" >> "${GITHUB_OUTPUT}"
+
+          echo "MATRIX=${MATRIX}"
+
+
+  #####################################################################
+  # ✅ Matrix job – one region = one terraform run = one state
+  #####################################################################
+  azfnapp-TF-Init:
+    runs-on: [ self-hosted, linux ]
+    needs: [ prep ]
+
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prep.outputs.matrix) }}
+
+    steps:
+      - name: Code check out
+        uses: actions/checkout@v4
+
+      - name: Validate tooling (jq + terraform)
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v jq >/dev/null 2>&1 || { echo "jq not found on runner"; exit 1; }
+          command -v terraform >/dev/null 2>&1 || { echo "terraform not found on runner"; exit 1; }
+          jq --version
+          terraform version
+
+      - name: Write input file
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "${{ github.workspace }}/input.json" << 'EOF'
+          ${{ github.event.inputs.tf_resource_json }}
+          EOF
+
+      # These secrets are assumed to be JSON already
+      - name: Write nonprod az sp to file
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "${{ github.workspace }}/secrets.auto.tfvars_nonprod.json" << 'EOF'
+          ${{ secrets.AZ_SP_ESCO_NONPROD }}
+          EOF
+
+      - name: Write nonprod backend to file
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "${{ github.workspace }}/backend_nonprod.json" << 'EOF'
+          ${{ secrets.AZ_BACKEND_ESCO_NONPROD }}
+          EOF
+
+      - name: Write prod az sp to file
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "${{ github.workspace }}/secrets.auto.tfvars_prod.json" << 'EOF'
+          ${{ secrets.AZ_SP_ESCO_PROD }}
+          EOF
+
+      - name: Write prod backend to file
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "${{ github.workspace }}/backend_prod.json" << 'EOF'
+          ${{ secrets.AZ_BACKEND_ESCO_PROD }}
+          EOF
+
+      #####################################################################
+      # ➕ Create region-scoped tfvars JSON (ONE region per job)
+      #####################################################################
+      - name: Create region-scoped variables file
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          REGION="${{ matrix.region }}"
+          echo "Deploying region: ${REGION}"
+
+          jq --arg r "${REGION}" '
+            .regions = { ($r): .regions[$r] }
+          ' "${{ github.workspace }}/input.json" > "${{ github.workspace }}/region.json"
+
+          echo "Region payload:"
+          cat "${{ github.workspace }}/region.json"
+
+      #####################################################################
+      # ➕ Install TFLint + run it (before plan)
+      #####################################################################
+      - name: Install TFLint
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Install locally into workspace/bin and add to PATH
+          mkdir -p "${{ github.workspace }}/bin"
+          OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+          ARCH="$(uname -m)"
+          case "${ARCH}" in
+            x86_64|amd64) ARCH="amd64" ;;
+            aarch64|arm64) ARCH="arm64" ;;
+            *) echo "Unsupported arch: ${ARCH}"; exit 1 ;;
+          esac
+
+          TFLINT_ZIP="tflint_${OS}_${ARCH}.zip"
+          URL="https://github.com/terraform-linters/tflint/releases/download/${TFLINT_VERSION}/${TFLINT_ZIP}"
+
+          echo "Downloading: ${URL}"
+          curl -fsSL -o "${{ github.workspace }}/bin/${TFLINT_ZIP}" "${URL}"
+          unzip -o "${{ github.workspace }}/bin/${TFLINT_ZIP}" -d "${{ github.workspace }}/bin"
+          chmod +x "${{ github.workspace }}/bin/tflint"
+
+          echo "${{ github.workspace }}/bin" >> "${GITHUB_PATH}"
+
+          tflint --version
+
+      - name: Run TFLint (linux/)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "${{ github.workspace }}/${{ env.TF_DIR }}"
+
+          # Init tflint plugins if config exists; safe to run even if not
+          if [ -f ".tflint.hcl" ]; then
+            tflint --init
+          fi
+
+          # Run lint
+          tflint
+
+      #####################################################################
+      # ✅ terraform init (state key per functionapp)
+      #####################################################################
+      - name: terraform init (per region state)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          REGION="${{ matrix.region }}"
+
+          ENVIRONMENT="$(jq -r '.environment' "${{ github.workspace }}/region.json")"
+          APPCODE="$(jq -r '.appcode' "${{ github.workspace }}/region.json")"
+          APPNAME="$(jq -r '.appname' "${{ github.workspace }}/region.json")"
+          FUNCNAME="$(jq -r --arg r "${REGION}" '.regions[$r].function_app_name' "${{ github.workspace }}/region.json")"
+
+          # Move files into TF working directory (linux/)
+          mv "${{ github.workspace }}/region.json" "${{ github.workspace }}/${{ env.TF_DIR }}/variables.auto.tfvars.json"
+          mv "${{ github.workspace }}/backend_${ENVIRONMENT}.json" "${{ github.workspace }}/${{ env.TF_DIR }}/backend.json"
+          mv "${{ github.workspace }}/secrets.auto.tfvars_${ENVIRONMENT}.json" "${{ github.workspace }}/${{ env.TF_DIR }}/secrets.auto.tfvars.json"
+
+          cd "${{ github.workspace }}/${{ env.TF_DIR }}"
+          ls -ltr
+          echo "Auto tfvars:"
+          cat variables.auto.tfvars.json
+
+          TERRAFORM_STATE_KEY="esfn/${ENVIRONMENT}/${APPCODE}/${APPNAME}/azfnapp/${REGION}/${FUNCNAME}/terraform.tfstate"
+
+          terraform init -input=false \
+            -backend-config="backend.json" \
+            -backend-config="key=${TERRAFORM_STATE_KEY}"
+
+      - name: terraform plan
+        continue-on-error: true
+        id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "${{ github.workspace }}/${{ env.TF_DIR }}"
+          terraform plan -input=false -out=tfplan > tf-file.plan
+
+      - name: terraform apply
+        continue-on-error: true
+        id: apply
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "${{ github.workspace }}/${{ env.TF_DIR }}" && ls -lrt
+          terraform apply -auto-approve -input=false tfplan
