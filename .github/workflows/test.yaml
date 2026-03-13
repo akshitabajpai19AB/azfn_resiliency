@@ -20,7 +20,7 @@ jobs:
   # ➕ Prep job to build dynamic matrix from JSON regions keys
   #####################################################################
   prep:
-    runs-on: [ self-hosted, linux ]
+    runs-on: [ linux ]
     outputs:
       matrix: ${{ steps.mk.outputs.matrix }}
       environment: ${{ steps.mk.outputs.environment }}
@@ -74,7 +74,7 @@ jobs:
   # ✅ Matrix job – one region = one terraform run = one state
   #####################################################################
   azfnapp-TF-Init:
-    runs-on: [ self-hosted, linux ]
+    runs-on: [ linux ]
     needs: [ prep ]
 
     strategy:
