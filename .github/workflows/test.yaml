@@ -48,9 +48,7 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           $path = Join-Path $env:GITHUB_WORKSPACE "input.json"
-          $content = @"
-${{ github.event.inputs.tf_resource_json }}
-"@
+          $content = @"${{ github.event.inputs.tf_resource_json }}"@
 
           Set-Content -Path $path -Value $content -Encoding utf8
 
@@ -125,9 +123,7 @@ ${{ github.event.inputs.tf_resource_json }}
           $ErrorActionPreference = "Stop"
 
           $path = Join-Path $env:GITHUB_WORKSPACE "input.json"
-          $content = @"
-${{ github.event.inputs.tf_resource_json }}
-"@
+          $content = @"${{ github.event.inputs.tf_resource_json }}"@
 
           Set-Content -Path $path -Value $content -Encoding utf8
 
@@ -137,9 +133,7 @@ ${{ github.event.inputs.tf_resource_json }}
         run: |
           $ErrorActionPreference = "Stop"
           $path = Join-Path $env:GITHUB_WORKSPACE "secrets.auto.tfvars_nonprod.json"
-          $content = @"
-${{ secrets.AZ_SP_ESCO_NONPROD }}
-"@
+          $content = @"${{ secrets.AZ_SP_ESCO_NONPROD }}"@
           Set-Content -Path $path -Value $content -Encoding utf8
 
       - name: Write nonprod backend to file
@@ -147,9 +141,7 @@ ${{ secrets.AZ_SP_ESCO_NONPROD }}
         run: |
           $ErrorActionPreference = "Stop"
           $path = Join-Path $env:GITHUB_WORKSPACE "backend_nonprod.json"
-          $content = @"
-${{ secrets.AZ_BACKEND_ESCO_NONPROD }}
-"@
+          $content = @"${{ secrets.AZ_BACKEND_ESCO_NONPROD }}"@
           Set-Content -Path $path -Value $content -Encoding utf8
 
       - name: Write prod az sp to file
@@ -157,9 +149,7 @@ ${{ secrets.AZ_BACKEND_ESCO_NONPROD }}
         run: |
           $ErrorActionPreference = "Stop"
           $path = Join-Path $env:GITHUB_WORKSPACE "secrets.auto.tfvars_prod.json"
-          $content = @"
-${{ secrets.AZ_SP_ESCO_PROD }}
-"@
+          $content = @"${{ secrets.AZ_SP_ESCO_PROD }}"@
           Set-Content -Path $path -Value $content -Encoding utf8
 
       - name: Write prod backend to file
@@ -167,9 +157,7 @@ ${{ secrets.AZ_SP_ESCO_PROD }}
         run: |
           $ErrorActionPreference = "Stop"
           $path = Join-Path $env:GITHUB_WORKSPACE "backend_prod.json"
-          $content = @"
-${{ secrets.AZ_BACKEND_ESCO_PROD }}
-"@
+          $content = @"${{ secrets.AZ_BACKEND_ESCO_PROD }}"@
           Set-Content -Path $path -Value $content -Encoding utf8
 
       #####################################################################
