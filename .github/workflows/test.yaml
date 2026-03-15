@@ -26,48 +26,71 @@ jobs:
       environment: ${{ steps.mk.outputs.environment }}
       appcode: ${{ steps.mk.outputs.appcode }}
       appname: ${{ steps.mk.outputs.appname }}
+
     steps:
       - name: Code check out
         uses: actions/checkout@v4
 
-      - name: Validate tooling (jq + terraform)
-        shell: bash
+      - name: Validate tooling (terraform)
+        shell: powershell
         run: |
-          set -euo pipefail
-          command -v jq >/dev/null 2>&1 || { echo "jq not found on runner"; exit 1; }
-          command -v terraform >/dev/null 2>&1 || { echo "terraform not found on runner"; exit 1; }
-          jq --version
+          $ErrorActionPreference = "Stop"
+
+          if (-not (Get-Command terraform -ErrorAction SilentlyContinue)) {
+            throw "terraform not found on runner"
+          }
+
           terraform version
 
       - name: Write input file
-        shell: bash
+        shell: powershell
         run: |
-          set -euo pipefail
-          cat > "${{ github.workspace }}/input.json" << 'EOF'
-          ${{ github.event.inputs.tf_resource_json }}
-          EOF
+          $ErrorActionPreference = "Stop"
 
-          echo "Input payload:"
-          cat "${{ github.workspace }}/input.json"
+          $path = Join-Path $env:GITHUB_WORKSPACE "input.json"
+          $content = @"
+${{ github.event.inputs.tf_resource_json }}
+"@
 
-      - name: Build matrix from JSON
+          Set-Content -Path $path -Value $content -Encoding utf8
+
+          Write-Host "Input payload:"
+          Get-Content -Path $path -Raw
+
+      - name: Build matrix from JSON (no jq)
         id: mk
-        shell: bash
+        shell: powershell
         run: |
-          set -euo pipefail
+          $ErrorActionPreference = "Stop"
 
-          ENVIRONMENT="$(jq -r '.environment' "${{ github.workspace }}/input.json")"
-          APPCODE="$(jq -r '.appcode' "${{ github.workspace }}/input.json")"
-          APPNAME="$(jq -r '.appname' "${{ github.workspace }}/input.json")"
+          $jsonPath = Join-Path $env:GITHUB_WORKSPACE "input.json"
+          $payload = Get-Content -Path $jsonPath -Raw | ConvertFrom-Json
 
-          MATRIX="$(jq -c '{region: (.regions | keys)}' "${{ github.workspace }}/input.json")"
+          $environment = $payload.environment
+          $appcode     = $payload.appcode
+          $appname     = $payload.appname
 
-          echo "environment=${ENVIRONMENT}" >> "${GITHUB_OUTPUT}"
-          echo "appcode=${APPCODE}" >> "${GITHUB_OUTPUT}"
-          echo "appname=${APPNAME}" >> "${GITHUB_OUTPUT}"
-          echo "matrix=${MATRIX}" >> "${GITHUB_OUTPUT}"
+          if (-not $payload.regions) {
+            throw "Input JSON must contain a 'regions' object"
+          }
 
-          echo "MATRIX=${MATRIX}"
+          # region keys from .regions (map/object)
+          $regions = @($payload.regions.PSObject.Properties.Name)
+
+          if ($regions.Count -eq 0) {
+            throw "No regions found under input JSON .regions"
+          }
+
+          # matrix = {"region":["westus2","eastus",...]}
+          $matrixObj = @{ region = $regions }
+          $matrix = ($matrixObj | ConvertTo-Json -Compress)
+
+          "environment=$environment" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "appcode=$appcode"         | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "appname=$appname"         | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "matrix=$matrix"           | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+          Write-Host "MATRIX=$matrix"
 
 
   #####################################################################
@@ -85,163 +108,211 @@ jobs:
       - name: Code check out
         uses: actions/checkout@v4
 
-      - name: Validate tooling (jq + terraform)
-        shell: bash
+      - name: Validate tooling (terraform)
+        shell: powershell
         run: |
-          set -euo pipefail
-          command -v jq >/dev/null 2>&1 || { echo "jq not found on runner"; exit 1; }
-          command -v terraform >/dev/null 2>&1 || { echo "terraform not found on runner"; exit 1; }
-          jq --version
+          $ErrorActionPreference = "Stop"
+
+          if (-not (Get-Command terraform -ErrorAction SilentlyContinue)) {
+            throw "terraform not found on runner"
+          }
+
           terraform version
 
       - name: Write input file
-        shell: bash
+        shell: powershell
         run: |
-          set -euo pipefail
-          cat > "${{ github.workspace }}/input.json" << 'EOF'
-          ${{ github.event.inputs.tf_resource_json }}
-          EOF
+          $ErrorActionPreference = "Stop"
+
+          $path = Join-Path $env:GITHUB_WORKSPACE "input.json"
+          $content = @"
+${{ github.event.inputs.tf_resource_json }}
+"@
+
+          Set-Content -Path $path -Value $content -Encoding utf8
 
       # These secrets are assumed to be JSON already
       - name: Write nonprod az sp to file
-        shell: bash
+        shell: powershell
         run: |
-          set -euo pipefail
-          cat > "${{ github.workspace }}/secrets.auto.tfvars_nonprod.json" << 'EOF'
-          ${{ secrets.AZ_SP_ESCO_NONPROD }}
-          EOF
+          $ErrorActionPreference = "Stop"
+          $path = Join-Path $env:GITHUB_WORKSPACE "secrets.auto.tfvars_nonprod.json"
+          $content = @"
+${{ secrets.AZ_SP_ESCO_NONPROD }}
+"@
+          Set-Content -Path $path -Value $content -Encoding utf8
 
       - name: Write nonprod backend to file
-        shell: bash
+        shell: powershell
         run: |
-          set -euo pipefail
-          cat > "${{ github.workspace }}/backend_nonprod.json" << 'EOF'
-          ${{ secrets.AZ_BACKEND_ESCO_NONPROD }}
-          EOF
+          $ErrorActionPreference = "Stop"
+          $path = Join-Path $env:GITHUB_WORKSPACE "backend_nonprod.json"
+          $content = @"
+${{ secrets.AZ_BACKEND_ESCO_NONPROD }}
+"@
+          Set-Content -Path $path -Value $content -Encoding utf8
 
       - name: Write prod az sp to file
-        shell: bash
+        shell: powershell
         run: |
-          set -euo pipefail
-          cat > "${{ github.workspace }}/secrets.auto.tfvars_prod.json" << 'EOF'
-          ${{ secrets.AZ_SP_ESCO_PROD }}
-          EOF
+          $ErrorActionPreference = "Stop"
+          $path = Join-Path $env:GITHUB_WORKSPACE "secrets.auto.tfvars_prod.json"
+          $content = @"
+${{ secrets.AZ_SP_ESCO_PROD }}
+"@
+          Set-Content -Path $path -Value $content -Encoding utf8
 
       - name: Write prod backend to file
-        shell: bash
+        shell: powershell
         run: |
-          set -euo pipefail
-          cat > "${{ github.workspace }}/backend_prod.json" << 'EOF'
-          ${{ secrets.AZ_BACKEND_ESCO_PROD }}
-          EOF
+          $ErrorActionPreference = "Stop"
+          $path = Join-Path $env:GITHUB_WORKSPACE "backend_prod.json"
+          $content = @"
+${{ secrets.AZ_BACKEND_ESCO_PROD }}
+"@
+          Set-Content -Path $path -Value $content -Encoding utf8
 
       #####################################################################
-      # ➕ Create region-scoped tfvars JSON (ONE region per job)
+      # ➕ Create region-scoped tfvars JSON (ONE region per job) - no jq
       #####################################################################
-      - name: Create region-scoped variables file
-        shell: bash
+      - name: Create region-scoped variables file (no jq)
+        shell: powershell
         run: |
-          set -euo pipefail
+          $ErrorActionPreference = "Stop"
 
-          REGION="${{ matrix.region }}"
-          echo "Deploying region: ${REGION}"
+          $region  = "${{ matrix.region }}"
+          Write-Host "Deploying region: $region"
 
-          jq --arg r "${REGION}" '
-            .regions = { ($r): .regions[$r] }
-          ' "${{ github.workspace }}/input.json" > "${{ github.workspace }}/region.json"
+          $inPath  = Join-Path $env:GITHUB_WORKSPACE "input.json"
+          $outPath = Join-Path $env:GITHUB_WORKSPACE "region.json"
 
-          echo "Region payload:"
-          cat "${{ github.workspace }}/region.json"
+          $payload = Get-Content -Path $inPath -Raw | ConvertFrom-Json
+
+          if (-not $payload.regions.$region) {
+            throw "Region '$region' not found under .regions"
+          }
+
+          $oneRegion = $payload.regions.$region
+
+          # Replace regions with a single-entry object
+          $payload.regions = New-Object PSObject
+          $payload.regions | Add-Member -NotePropertyName $region -NotePropertyValue $oneRegion
+
+          ($payload | ConvertTo-Json -Depth 50) | Set-Content -Path $outPath -Encoding utf8
+
+          Write-Host "Region payload:"
+          Get-Content -Path $outPath -Raw
 
       #####################################################################
-      # ➕ Install TFLint + run it (before plan)
+      # ➕ Install TFLint + run it (before plan) - Windows compatible
       #####################################################################
-      - name: Install TFLint
-        shell: bash
+      - name: Install TFLint (Windows)
+        shell: powershell
         run: |
-          set -euo pipefail
+          $ErrorActionPreference = "Stop"
 
-          # Install locally into workspace/bin and add to PATH
-          mkdir -p "${{ github.workspace }}/bin"
-          OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
-          ARCH="$(uname -m)"
-          case "${ARCH}" in
-            x86_64|amd64) ARCH="amd64" ;;
-            aarch64|arm64) ARCH="arm64" ;;
-            *) echo "Unsupported arch: ${ARCH}"; exit 1 ;;
-          esac
+          $binDir = Join-Path $env:GITHUB_WORKSPACE "bin"
+          New-Item -ItemType Directory -Force -Path $binDir | Out-Null
 
-          TFLINT_ZIP="tflint_${OS}_${ARCH}.zip"
-          URL="https://github.com/terraform-linters/tflint/releases/download/${TFLINT_VERSION}/${TFLINT_ZIP}"
+          $zipName = "tflint_windows_amd64.zip"
+          $url = "https://github.com/terraform-linters/tflint/releases/download/${{ env.TFLINT_VERSION }}/$zipName"
+          $zipPath = Join-Path $binDir $zipName
 
-          echo "Downloading: ${URL}"
-          curl -fsSL -o "${{ github.workspace }}/bin/${TFLINT_ZIP}" "${URL}"
-          unzip -o "${{ github.workspace }}/bin/${TFLINT_ZIP}" -d "${{ github.workspace }}/bin"
-          chmod +x "${{ github.workspace }}/bin/tflint"
+          Write-Host "Downloading: $url"
+          Invoke-WebRequest -Uri $url -OutFile $zipPath
 
-          echo "${{ github.workspace }}/bin" >> "${GITHUB_PATH}"
+          Expand-Archive -Path $zipPath -DestinationPath $binDir -Force
 
-          tflint --version
+          $tflintExe = Join-Path $binDir "tflint.exe"
+          if (-not (Test-Path $tflintExe)) {
+            throw "tflint.exe not found after extracting $zipName"
+          }
+
+          # Add to PATH for next steps
+          $binDir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+          & $tflintExe --version
 
       - name: Run TFLint (linux/)
-        shell: bash
+        shell: powershell
         run: |
-          set -euo pipefail
-          cd "${{ github.workspace }}/${{ env.TF_DIR }}"
+          $ErrorActionPreference = "Stop"
 
-          # Init tflint plugins if config exists; safe to run even if not
-          if [ -f ".tflint.hcl" ]; then
+          $tfDir = Join-Path $env:GITHUB_WORKSPACE "${{ env.TF_DIR }}"
+          if (-not (Test-Path $tfDir)) {
+            throw "TF_DIR folder not found: $tfDir"
+          }
+
+          Set-Location $tfDir
+
+          if (Test-Path ".tflint.hcl") {
             tflint --init
-          fi
+          }
 
-          # Run lint
           tflint
 
       #####################################################################
       # ✅ terraform init (state key per functionapp)
       #####################################################################
       - name: terraform init (per region state)
-        shell: bash
+        shell: powershell
         run: |
-          set -euo pipefail
+          $ErrorActionPreference = "Stop"
 
-          REGION="${{ matrix.region }}"
+          $region = "${{ matrix.region }}"
 
-          ENVIRONMENT="$(jq -r '.environment' "${{ github.workspace }}/region.json")"
-          APPCODE="$(jq -r '.appcode' "${{ github.workspace }}/region.json")"
-          APPNAME="$(jq -r '.appname' "${{ github.workspace }}/region.json")"
-          FUNCNAME="$(jq -r --arg r "${REGION}" '.regions[$r].function_app_name' "${{ github.workspace }}/region.json")"
+          $regionJsonPath = Join-Path $env:GITHUB_WORKSPACE "region.json"
+          $payload = Get-Content -Path $regionJsonPath -Raw | ConvertFrom-Json
+
+          $environment = $payload.environment
+          $appcode     = $payload.appcode
+          $appname     = $payload.appname
+          $funcname    = $payload.regions.$region.function_app_name
+
+          if (-not $funcname) {
+            throw "function_app_name not found for region '$region' in region.json"
+          }
+
+          $tfDir = Join-Path $env:GITHUB_WORKSPACE "${{ env.TF_DIR }}"
 
           # Move files into TF working directory (linux/)
-          mv "${{ github.workspace }}/region.json" "${{ github.workspace }}/${{ env.TF_DIR }}/variables.auto.tfvars.json"
-          mv "${{ github.workspace }}/backend_${ENVIRONMENT}.json" "${{ github.workspace }}/${{ env.TF_DIR }}/backend.json"
-          mv "${{ github.workspace }}/secrets.auto.tfvars_${ENVIRONMENT}.json" "${{ github.workspace }}/${{ env.TF_DIR }}/secrets.auto.tfvars.json"
+          Move-Item -Path $regionJsonPath -Destination (Join-Path $tfDir "variables.auto.tfvars.json") -Force
+          Move-Item -Path (Join-Path $env:GITHUB_WORKSPACE "backend_$environment.json") -Destination (Join-Path $tfDir "backend.json") -Force
+          Move-Item -Path (Join-Path $env:GITHUB_WORKSPACE "secrets.auto.tfvars_$environment.json") -Destination (Join-Path $tfDir "secrets.auto.tfvars.json") -Force
 
-          cd "${{ github.workspace }}/${{ env.TF_DIR }}"
-          ls -ltr
-          echo "Auto tfvars:"
-          cat variables.auto.tfvars.json
+          Set-Location $tfDir
 
-          TERRAFORM_STATE_KEY="esfn/${ENVIRONMENT}/${APPCODE}/${APPNAME}/azfnapp/${REGION}/${FUNCNAME}/terraform.tfstate"
+          Write-Host "Auto tfvars:"
+          Get-Content -Path (Join-Path $tfDir "variables.auto.tfvars.json") -Raw
 
-          terraform init -input=false \
-            -backend-config="backend.json" \
-            -backend-config="key=${TERRAFORM_STATE_KEY}"
+          $stateKey = "esfn/$environment/$appcode/$appname/azfnapp/$region/$funcname/terraform.tfstate"
+          Write-Host "Terraform state key: $stateKey"
+
+          terraform init -input=false `
+            -backend-config="backend.json" `
+            -backend-config="key=$stateKey"
 
       - name: terraform plan
         continue-on-error: true
         id: plan
-        shell: bash
+        shell: powershell
         run: |
-          set -euo pipefail
-          cd "${{ github.workspace }}/${{ env.TF_DIR }}"
-          terraform plan -input=false -out=tfplan > tf-file.plan
+          $ErrorActionPreference = "Stop"
+          $tfDir = Join-Path $env:GITHUB_WORKSPACE "${{ env.TF_DIR }}"
+          Set-Location $tfDir
+
+          # Write plan output to file while keeping exit code meaningful
+          terraform plan -input=false -out=tfplan 2>&1 | Tee-Object -FilePath "tf-file.plan"
 
       - name: terraform apply
         continue-on-error: true
         id: apply
-        shell: bash
+        shell: powershell
         run: |
-          set -euo pipefail
-          cd "${{ github.workspace }}/${{ env.TF_DIR }}" && ls -lrt
+          $ErrorActionPreference = "Stop"
+          $tfDir = Join-Path $env:GITHUB_WORKSPACE "${{ env.TF_DIR }}"
+          Set-Location $tfDir
+
+          Get-ChildItem -Force
+
           terraform apply -auto-approve -input=false tfplan
