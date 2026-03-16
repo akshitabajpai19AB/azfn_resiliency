@@ -230,20 +230,16 @@ jobs:
           echo "---- variables.auto.tfvars.json ----"
           test -f "$TFROOT/variables.auto.tfvars.json" && cat "$TFROOT/variables.auto.tfvars.json" || echo "variables.auto.tfvars.json NOT FOUND"
 
-      - name: Terraform init (with verbose error)
+      - name: Terraform Init (per region state)
         shell: bash
         run: |
           set -euo pipefail
+
           TFROOT="${{ github.workspace }}/${{ env.TF_DIR }}"
-          cd "$TFROOT"
-
-          terraform init -input=false \
-            -backend-config="backend.json" \
-            -backend-config="key=${TERRAFORM_STATE_KEY}" \
-            -no-color
-
+          cd "${TFROOT}"
 
           REGION="${{ matrix.region }}"
+
           ENVIRONMENT="$(jq -r '.environment' variables.auto.tfvars.json)"
           APPCODE="$(jq -r '.appcode' variables.auto.tfvars.json)"
           APPNAME="$(jq -r '.appname' variables.auto.tfvars.json)"
