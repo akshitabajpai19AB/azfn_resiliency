@@ -254,26 +254,19 @@ jobs:
 
           echo "---- Extract function app name for region (safe) ----"
 
-          # ✅ KEY FIX: put `|| true` AFTER the assignment so `set -e` won't exit
-          FUNCNAME="$(jq -r --arg r "$REGION" '.regions[$r].function_app_name // empty' variables.auto.tfvars.json 2>jq.err)" || true
+          # IMPORTANT: do NOT use FUNCNAME (bash reserved). Use a safe variable name.
+          FUNCTION_APP_NAME="$(jq -r --arg r "$REGION" '.regions[$r].function_app_name // empty' variables.auto.tfvars.json)"
 
-          # Show jq stderr if any (non-fatal)
-          if [ -s jq.err ]; then
-            echo "jq stderr (non-fatal):"
-            cat jq.err
-          fi
-
-          # Validate FUNCNAME
-          if [ -z "${FUNCNAME:-}" ] || [ "$FUNCNAME" = "null" ]; then
+          if [ -z "$FUNCTION_APP_NAME" ] || [ "$FUNCTION_APP_NAME" = "null" ]; then
             echo "❌ function_app_name missing/empty for region '$REGION'"
             echo "Region object is:"
             jq -r --arg r "$REGION" '.regions[$r]' variables.auto.tfvars.json || true
             exit 1
           fi
 
-          echo "FUNCNAME=$FUNCNAME"
+          echo "FUNCTION_APP_NAME=$FUNCTION_APP_NAME"
 
-          TERRAFORM_STATE_KEY="esfn/${ENVIRONMENT}/${APPCODE}/${APPNAME}/azfnapp/${REGION}/${FUNCNAME}/terraform.tfstate"
+          TERRAFORM_STATE_KEY="esfn/${ENVIRONMENT}/${APPCODE}/${APPNAME}/azfnapp/${REGION}/${FUNCTION_APP_NAME}/terraform.tfstate"
           echo "STATE_KEY=$TERRAFORM_STATE_KEY"
 
           echo "backend.json:"
@@ -282,6 +275,7 @@ jobs:
           terraform init -input=false -no-color \
             -backend-config="backend.json" \
             -backend-config="key=${TERRAFORM_STATE_KEY}" 2>&1 | tee tf-init.log
+
 
       - name: Terraform Validate
         shell: bash
