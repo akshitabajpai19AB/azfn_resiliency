@@ -9,7 +9,3 @@ output "function_apps" {
     }
   }
 }
-
-# output "frontdoor_endpoint" {
-#   value = azurerm_cdn_frontdoor_endpoint.afd_endpoint.host_name
-# }
