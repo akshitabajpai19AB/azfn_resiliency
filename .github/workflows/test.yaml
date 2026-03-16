@@ -218,59 +218,55 @@ jobs:
       #####################################################################
       # Terraform init/plan/apply with 1 state per function app
       #####################################################################
-      - name: Debug + Terraform Init (single step)
+      - name: Debug + Compute Key + Terraform Init (single step, verbose)
         shell: bash
         run: |
           set -euo pipefail
 
-          # If TF_DIR is already correct in your workflow, keep this line as-is
           TFROOT="${{ github.workspace }}/${{ env.TF_DIR }}"
-          echo "TFROOT=${TFROOT}"
+          echo "TFROOT=$TFROOT"
+          echo "PWD=$(pwd)"
 
-          # ---- Debug: folder & key files ----
-          echo "PWD (before cd)=$(pwd)"
-          echo "Workspace listing:"
-          ls -la "${{ github.workspace }}"
+          echo "---- TFROOT listing ----"
+          ls -la "$TFROOT"
 
-          echo "TFROOT listing:"
-          ls -la "${TFROOT}"
+          # Hard checks
+          ls -la "$TFROOT"/*.tf >/dev/null
+          test -f "$TFROOT/backend.json"
+          test -f "$TFROOT/variables.auto.tfvars.json"
 
-          echo "Check *.tf files:"
-          ls -la "${TFROOT}"/*.tf 2>/dev/null || { echo "❌ No .tf files found in TFROOT"; exit 1; }
+          cd "$TFROOT"
 
-          echo "Check required files:"
-          test -f "${TFROOT}/backend.json" || { echo "❌ backend.json NOT FOUND in TFROOT"; exit 1; }
-          test -f "${TFROOT}/variables.auto.tfvars.json" || { echo "❌ variables.auto.tfvars.json NOT FOUND in TFROOT"; exit 1; }
-
-          echo "backend.json (first 200 chars):"
-          head -c 200 "${TFROOT}/backend.json" || true
-          echo
-          echo "variables.auto.tfvars.json (first 200 chars):"
-          head -c 200 "${TFROOT}/variables.auto.tfvars.json" || true
-          echo
-
-          # ---- Compute state key ----
-          cd "${TFROOT}"
+          echo "---- Validate JSON ----"
+          # If JSON is malformed, jq will fail here with a clear message
+          jq -e . variables.auto.tfvars.json >/dev/null
+          echo "variables.auto.tfvars.json is valid JSON ✅"
 
           REGION="${{ matrix.region }}"
-          echo "REGION=${REGION}"
+          echo "REGION=$REGION"
 
-          ENVIRONMENT="$(jq -r '.environment' variables.auto.tfvars.json)"
-          APPCODE="$(jq -r '.appcode' variables.auto.tfvars.json)"
-          APPNAME="$(jq -r '.appname' variables.auto.tfvars.json)"
-          FUNCNAME="$(jq -r --arg r "${REGION}" '.regions[$r].function_app_name' variables.auto.tfvars.json)"
+          echo "---- Show available region keys ----"
+          jq -r '.regions | keys[]' variables.auto.tfvars.json
 
-          if [ -z "${FUNCNAME}" ] || [ "${FUNCNAME}" = "null" ]; then
-            echo "❌ function_app_name missing for region '${REGION}' in variables.auto.tfvars.json"
-            echo "Available regions keys:"
-            jq -r '.regions | keys[]' variables.auto.tfvars.json || true
-            exit 1
-          fi
+          echo "---- Extract globals ----"
+          ENVIRONMENT="$(jq -er '.environment' variables.auto.tfvars.json)"
+          APPCODE="$(jq -er '.appcode' variables.auto.tfvars.json)"
+          APPNAME="$(jq -er '.appname' variables.auto.tfvars.json)"
+          echo "ENVIRONMENT=$ENVIRONMENT"
+          echo "APPCODE=$APPCODE"
+          echo "APPNAME=$APPNAME"
+
+          echo "---- Extract function app name for region ----"
+          FUNCNAME="$(jq -er --arg r "$REGION" '.regions[$r].function_app_name' variables.auto.tfvars.json)"
+          echo "FUNCNAME=$FUNCNAME"
 
           TERRAFORM_STATE_KEY="esfn/${ENVIRONMENT}/${APPCODE}/${APPNAME}/azfnapp/${REGION}/${FUNCNAME}/terraform.tfstate"
-          echo "STATE_KEY=${TERRAFORM_STATE_KEY}"
+          echo "STATE_KEY=$TERRAFORM_STATE_KEY"
 
-          # ---- Terraform init (show full error) ----
+          echo "---- backend.json ----"
+          cat backend.json
+
+          echo "---- Terraform init ----"
           terraform init -input=false -no-color \
             -backend-config="backend.json" \
             -backend-config="key=${TERRAFORM_STATE_KEY}" 2>&1 | tee tf-init.log
