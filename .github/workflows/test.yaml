@@ -218,39 +218,62 @@ jobs:
       #####################################################################
       # Terraform init/plan/apply with 1 state per function app
       #####################################################################
-      - name: Debug TFROOT contents
-        shell: bash
-        run: |
-          set -euo pipefail
-          TFROOT="${{ github.workspace }}/${{ env.TF_DIR }}"
-          echo "TFROOT=$TFROOT"
-          ls -la "$TFROOT"
-          echo "---- backend.json ----"
-          test -f "$TFROOT/backend.json" && cat "$TFROOT/backend.json" || echo "backend.json NOT FOUND"
-          echo "---- variables.auto.tfvars.json ----"
-          test -f "$TFROOT/variables.auto.tfvars.json" && cat "$TFROOT/variables.auto.tfvars.json" || echo "variables.auto.tfvars.json NOT FOUND"
-
-      - name: Terraform Init (per region state)
+      - name: Debug + Terraform Init (single step)
         shell: bash
         run: |
           set -euo pipefail
 
+          # If TF_DIR is already correct in your workflow, keep this line as-is
           TFROOT="${{ github.workspace }}/${{ env.TF_DIR }}"
+          echo "TFROOT=${TFROOT}"
+
+          # ---- Debug: folder & key files ----
+          echo "PWD (before cd)=$(pwd)"
+          echo "Workspace listing:"
+          ls -la "${{ github.workspace }}"
+
+          echo "TFROOT listing:"
+          ls -la "${TFROOT}"
+
+          echo "Check *.tf files:"
+          ls -la "${TFROOT}"/*.tf 2>/dev/null || { echo "❌ No .tf files found in TFROOT"; exit 1; }
+
+          echo "Check required files:"
+          test -f "${TFROOT}/backend.json" || { echo "❌ backend.json NOT FOUND in TFROOT"; exit 1; }
+          test -f "${TFROOT}/variables.auto.tfvars.json" || { echo "❌ variables.auto.tfvars.json NOT FOUND in TFROOT"; exit 1; }
+
+          echo "backend.json (first 200 chars):"
+          head -c 200 "${TFROOT}/backend.json" || true
+          echo
+          echo "variables.auto.tfvars.json (first 200 chars):"
+          head -c 200 "${TFROOT}/variables.auto.tfvars.json" || true
+          echo
+
+          # ---- Compute state key ----
           cd "${TFROOT}"
 
           REGION="${{ matrix.region }}"
+          echo "REGION=${REGION}"
 
           ENVIRONMENT="$(jq -r '.environment' variables.auto.tfvars.json)"
           APPCODE="$(jq -r '.appcode' variables.auto.tfvars.json)"
           APPNAME="$(jq -r '.appname' variables.auto.tfvars.json)"
           FUNCNAME="$(jq -r --arg r "${REGION}" '.regions[$r].function_app_name' variables.auto.tfvars.json)"
 
+          if [ -z "${FUNCNAME}" ] || [ "${FUNCNAME}" = "null" ]; then
+            echo "❌ function_app_name missing for region '${REGION}' in variables.auto.tfvars.json"
+            echo "Available regions keys:"
+            jq -r '.regions | keys[]' variables.auto.tfvars.json || true
+            exit 1
+          fi
+
           TERRAFORM_STATE_KEY="esfn/${ENVIRONMENT}/${APPCODE}/${APPNAME}/azfnapp/${REGION}/${FUNCNAME}/terraform.tfstate"
           echo "STATE_KEY=${TERRAFORM_STATE_KEY}"
 
-          terraform init -input=false \
+          # ---- Terraform init (show full error) ----
+          terraform init -input=false -no-color \
             -backend-config="backend.json" \
-            -backend-config="key=${TERRAFORM_STATE_KEY}"
+            -backend-config="key=${TERRAFORM_STATE_KEY}" 2>&1 | tee tf-init.log
 
       - name: Terraform Validate
         shell: bash
