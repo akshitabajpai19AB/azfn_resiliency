@@ -252,22 +252,28 @@ jobs:
           jq -r --arg r "$REGION" '.regions[$r]' variables.auto.tfvars.json
 
           echo "---- Extract function app name for region ----"
-          FUNCNAME="$(jq -r --arg r "$REGION" '.regions[$r].function_app_name // empty' variables.auto.tfvars.json)"
-          if [ -z "$FUNCNAME" ]; then
-            echo "❌ function_app_name missing/empty for region '$REGION'"
+
+          set +e
+          FUNCNAME="$(jq -r --arg r "$REGION" '.regions[$r].function_app_name' variables.auto.tfvars.json)"
+          JQ_RC=$?
+          set -e
+
+          echo "jq rc=$JQ_RC"
+          echo "FUNCNAME=$FUNCNAME"
+
+          if [ $JQ_RC -ne 0 ] || [ -z "$FUNCNAME" ] || [ "$FUNCNAME" = "null" ]; then
+            echo "❌ Failed to read .regions[$REGION].function_app_name"
+            echo "Region object:"
+            jq -r --arg r "$REGION" '.regions[$r]' variables.auto.tfvars.json || true
             exit 1
           fi
-          echo "FUNCNAME=$FUNCNAME"
 
           TERRAFORM_STATE_KEY="esfn/${ENVIRONMENT}/${APPCODE}/${APPNAME}/azfnapp/${REGION}/${FUNCNAME}/terraform.tfstate"
           echo "STATE_KEY=$TERRAFORM_STATE_KEY"
 
-          echo "backend.json:"
-          cat backend.json
-
           terraform init -input=false -no-color \
-            -backend-config="backend.json" \
-            -backend-config="key=${TERRAFORM_STATE_KEY}" 2>&1 | tee tf-init.log
+          -backend-config="backend.json" \
+          -backend-config="key=${TERRAFORM_STATE_KEY}" 2>&1 | tee tf-init.log
 
       - name: Terraform Validate
         shell: bash
