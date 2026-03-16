@@ -218,7 +218,7 @@ jobs:
       #####################################################################
       # Terraform init/plan/apply with 1 state per function app
       #####################################################################
-      - name: Debug + Terraform Init (single step) - recommended
+      - name: Debug + Terraform Init (single step) - final recommended
         shell: bash
         run: |
           set -euo pipefail
@@ -227,7 +227,6 @@ jobs:
           TFROOT="${{ github.workspace }}/${{ env.TF_DIR }}"
           echo "TFROOT=$TFROOT"
 
-          # Basic sanity checks
           ls -la "$TFROOT"
           ls -la "$TFROOT"/*.tf >/dev/null
           test -f "$TFROOT/backend.json"
@@ -235,7 +234,7 @@ jobs:
 
           cd "$TFROOT"
 
-          # Validate JSON is parseable
+          # Validate JSON is parseable (will fail with clear message if malformed)
           jq -e . variables.auto.tfvars.json >/dev/null
 
           REGION="${{ matrix.region }}"
@@ -258,11 +257,19 @@ jobs:
 
           echo "---- Extract function app name for region (safe) ----"
 
-          # ✅ Recommended: do NOT rely on jq exit code with set -e
-          # Always assign something (string or empty) and validate ourselves.
-          FUNCNAME="$(jq -r --arg r "$REGION" '.regions[$r].function_app_name // empty' variables.auto.tfvars.json || true)"
+          # IMPORTANT:
+          # jq is sometimes exiting non-zero in GitHub runner even when printing output.
+          # Because of `set -e`, we MUST ignore jq rc and validate FUNCNAME ourselves.
+          FUNCNAME="$(jq -r --arg r "$REGION" '.regions[$r].function_app_name // empty' variables.auto.tfvars.json 2>jq.err || true)"
 
-          if [ -z "$FUNCNAME" ]; then
+          # If jq wrote anything to stderr, show it (for troubleshooting) but don't fail yet
+          if [ -s jq.err ]; then
+            echo "jq stderr (non-fatal):"
+            cat jq.err
+          fi
+
+          # Now do the real validation
+          if [ -z "$FUNCNAME" ] || [ "$FUNCNAME" = "null" ]; then
             echo "❌ function_app_name missing/empty for region '$REGION' in variables.auto.tfvars.json"
             echo "Region object is:"
             jq -r --arg r "$REGION" '.regions[$r]' variables.auto.tfvars.json || true
