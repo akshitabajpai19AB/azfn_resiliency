@@ -218,7 +218,7 @@ jobs:
       #####################################################################
       # Terraform init/plan/apply with 1 state per function app
       #####################################################################
-      - name: Debug + Terraform Init (single step) - final robust
+      - name: Debug + Terraform Init (single step) - final fix
         shell: bash
         run: |
           set -euo pipefail
@@ -234,6 +234,7 @@ jobs:
 
           cd "$TFROOT"
 
+          # Validate JSON is parseable
           jq -e . variables.auto.tfvars.json >/dev/null
 
           REGION="${{ matrix.region }}"
@@ -253,9 +254,8 @@ jobs:
 
           echo "---- Extract function app name for region (safe) ----"
 
-          # ✅ Key: NEVER let jq exit code kill the script under `set -e`
-          # Also capture jq stderr for visibility.
-          FUNCNAME="$(jq -r --arg r "$REGION" '.regions[$r].function_app_name // empty' variables.auto.tfvars.json 2>jq.err || true)"
+          # ✅ KEY FIX: put `|| true` AFTER the assignment so `set -e` won't exit
+          FUNCNAME="$(jq -r --arg r "$REGION" '.regions[$r].function_app_name // empty' variables.auto.tfvars.json 2>jq.err)" || true
 
           # Show jq stderr if any (non-fatal)
           if [ -s jq.err ]; then
@@ -264,7 +264,7 @@ jobs:
           fi
 
           # Validate FUNCNAME
-          if [ -z "$FUNCNAME" ] || [ "$FUNCNAME" = "null" ]; then
+          if [ -z "${FUNCNAME:-}" ] || [ "$FUNCNAME" = "null" ]; then
             echo "❌ function_app_name missing/empty for region '$REGION'"
             echo "Region object is:"
             jq -r --arg r "$REGION" '.regions[$r]' variables.auto.tfvars.json || true
