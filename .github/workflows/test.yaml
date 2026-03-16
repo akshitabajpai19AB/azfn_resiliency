@@ -218,40 +218,32 @@ jobs:
       #####################################################################
       # Terraform init/plan/apply with 1 state per function app
       #####################################################################
-      - name: Debug + Compute Key + Terraform Init (single step, verbose)
+      - name: Debug + Terraform Init (single step)
         shell: bash
         run: |
           set -euo pipefail
+          set -x
 
           TFROOT="${{ github.workspace }}/${{ env.TF_DIR }}"
           echo "TFROOT=$TFROOT"
-          echo "PWD=$(pwd)"
 
-          echo "---- TFROOT listing ----"
           ls -la "$TFROOT"
-
-          # Hard checks
           ls -la "$TFROOT"/*.tf >/dev/null
           test -f "$TFROOT/backend.json"
           test -f "$TFROOT/variables.auto.tfvars.json"
 
           cd "$TFROOT"
 
-          echo "---- Validate JSON ----"
-          # If JSON is malformed, jq will fail here with a clear message
           jq -e . variables.auto.tfvars.json >/dev/null
-          echo "variables.auto.tfvars.json is valid JSON ✅"
-
           REGION="${{ matrix.region }}"
           echo "REGION=$REGION"
 
-          echo "---- Show available region keys ----"
           jq -r '.regions | keys[]' variables.auto.tfvars.json
 
-          echo "---- Extract globals ----"
-          ENVIRONMENT="$(jq -er '.environment' variables.auto.tfvars.json)"
-          APPCODE="$(jq -er '.appcode' variables.auto.tfvars.json)"
-          APPNAME="$(jq -er '.appname' variables.auto.tfvars.json)"
+          ENVIRONMENT="$(jq -r '.environment' variables.auto.tfvars.json)"
+          APPCODE="$(jq -r '.appcode' variables.auto.tfvars.json)"
+          APPNAME="$(jq -r '.appname' variables.auto.tfvars.json)"
+
           echo "ENVIRONMENT=$ENVIRONMENT"
           echo "APPCODE=$APPCODE"
           echo "APPNAME=$APPNAME"
@@ -259,20 +251,20 @@ jobs:
           echo "Region object for $REGION:"
           jq -r --arg r "$REGION" '.regions[$r]' variables.auto.tfvars.json
 
-          echo "Function app name value:"
-          jq -r --arg r "$REGION" '.regions[$r].function_app_name' variables.auto.tfvars.json
-
           echo "---- Extract function app name for region ----"
-          FUNCNAME="$(jq -er --arg r "$REGION" '.regions[$r].function_app_name' variables.auto.tfvars.json)"
+          FUNCNAME="$(jq -r --arg r "$REGION" '.regions[$r].function_app_name // empty' variables.auto.tfvars.json)"
+          if [ -z "$FUNCNAME" ]; then
+            echo "❌ function_app_name missing/empty for region '$REGION'"
+            exit 1
+          fi
           echo "FUNCNAME=$FUNCNAME"
 
           TERRAFORM_STATE_KEY="esfn/${ENVIRONMENT}/${APPCODE}/${APPNAME}/azfnapp/${REGION}/${FUNCNAME}/terraform.tfstate"
           echo "STATE_KEY=$TERRAFORM_STATE_KEY"
 
-          echo "---- backend.json ----"
+          echo "backend.json:"
           cat backend.json
 
-          echo "---- Terraform init ----"
           terraform init -input=false -no-color \
             -backend-config="backend.json" \
             -backend-config="key=${TERRAFORM_STATE_KEY}" 2>&1 | tee tf-init.log
