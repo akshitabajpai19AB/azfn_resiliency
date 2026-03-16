@@ -17,7 +17,7 @@ permissions:
   id-token: write   # required for OIDC token issuance [2](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-azure)[1](https://learn.microsoft.com/en-us/azure/developer/github/connect-from-azure-openid-connect)
 
 env:
-  TF_DIR: infrastructure/azure-functions-resiliency/linux
+  TF_DIR: azfn_resiliency/linux
   TF_VERSION: "1.6.6"
   AZURE_CORE_OUTPUT: none   # reduces Azure CLI output in logs [5](https://lazyadmin.nl/powershell/running-scripts-is-disabled-on-this-system/)
 
