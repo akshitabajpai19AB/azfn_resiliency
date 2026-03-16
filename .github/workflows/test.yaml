@@ -1,6 +1,5 @@
-## Equivalent of your pipeline for GitHub-hosted runner (ubuntu-latest)
-## Deploys to Azure using azure/login (service principal secret)
-name: azfn-linux-resiliency-deploy
+## Source Job: https://jenkins.albertsons.com/job/esfn/job/azfn-fnapp-create/
+name: azfn-linux-resiliency-oidc-deploy
 
 on:
   workflow_dispatch:
@@ -9,22 +8,29 @@ on:
         description: 'Please provide input in json format'
         required: true
       do_apply:
-        description: 'Set true to run terraform apply (default: false)'
+        description: 'Set true to run terraform apply (default false)'
         required: false
         default: "false"
 
 permissions:
   contents: read
+  id-token: write   # required for OIDC token issuance [2](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-azure)[1](https://learn.microsoft.com/en-us/azure/developer/github/connect-from-azure-openid-connect)
 
 env:
   TF_DIR: infrastructure/azure-functions-resiliency/linux
   TF_VERSION: "1.6.6"
-  # Avoid noisy CLI outputs in logs (recommended by Azure Login docs)
-  AZURE_CORE_OUTPUT: none
+  AZURE_CORE_OUTPUT: none   # reduces Azure CLI output in logs [5](https://lazyadmin.nl/powershell/running-scripts-is-disabled-on-this-system/)
+
+  #####################################################################
+  # ⬇️ PASTE YOUR VALUES HERE (as requested - not using secrets)
+  #####################################################################
+  AZURE_CLIENT_ID: "c0703bd2-9622-430b-a2b5-a403d2dfd8a6"
+  AZURE_TENANT_ID: "bcc8c742-f2f5-4b4b-8bb2-9eb1298f7f7d"
+  AZURE_SUBSCRIPTION_ID: "cab62cde-5e64-4c68-a8ef-82ddbd5df224"
 
 jobs:
   #####################################################################
-  # Prep job: Build dynamic matrix from input.json (.regions keys)
+  # Prep job to build dynamic matrix from JSON regions keys
   #####################################################################
   prep:
     runs-on: ubuntu-latest
@@ -74,11 +80,10 @@ jobs:
 
           echo "MATRIX=${MATRIX}"
 
-
   #####################################################################
-  # Matrix job: one region = one terraform run = one state key
+  # Matrix job – one region = one terraform run = one state
   #####################################################################
-  azfnapp:
+  deploy:
     runs-on: ubuntu-latest
     needs: [ prep ]
 
@@ -98,12 +103,13 @@ jobs:
           sudo apt-get install -y jq
 
       #####################################################################
-      # ✅ FIX: Install Terraform BEFORE validating/running it
+      # ✅ Fix "terraform not found": install Terraform first
       #####################################################################
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: ${{ env.TF_VERSION }}
+      # setup-terraform downloads Terraform and adds it to PATH [3](https://bing.com/search?q=ubuntu-latest+runner+includes+terraform+preinstalled+or+must+install+hashicorp%2fsetup-terraform)
 
       - name: Verify Terraform
         shell: bash
@@ -112,28 +118,35 @@ jobs:
           terraform version
 
       #####################################################################
-      # Azure Login (Service Principal secret)
-      # Azure Login action supports creds JSON secret
+      # ✅ Azure Login via OIDC (no client secret)
       #####################################################################
-      - name: Azure Login
+      - name: Azure Login (OIDC)
         uses: azure/login@v2
         with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+      # azure/login supports these inputs and OIDC is recommended [5](https://lazyadmin.nl/powershell/running-scripts-is-disabled-on-this-system/)[1](https://learn.microsoft.com/en-us/azure/developer/github/connect-from-azure-openid-connect)
 
-      - name: Export ARM_* env vars for Terraform from AZURE_CREDENTIALS
+      #####################################################################
+      # Terraform Azure auth using OIDC env vars
+      # Setting ARM_USE_OIDC is a common required piece for Terraform + AzureRM backend [6](https://nedinthecloud.com/2022/06/08/using-oidc-authentication-with-the-azurerm-backend/)[7](https://colinsalmcorner.com/using-oidc-with-terraform-in-github-actions/)
+      #####################################################################
+      - name: Export ARM_* for Terraform (OIDC)
         shell: bash
         run: |
           set -euo pipefail
-          # Parse the AZURE_CREDENTIALS JSON and export standard ARM_* env vars
-          echo '${{ secrets.AZURE_CREDENTIALS }}' | jq -r '
-            "ARM_CLIENT_ID=" + .clientId,
-            "ARM_CLIENT_SECRET=" + .clientSecret,
-            "ARM_SUBSCRIPTION_ID=" + .subscriptionId,
-            "ARM_TENANT_ID=" + .tenantId
-          ' >> "${GITHUB_ENV}"
+          echo "ARM_USE_OIDC=true" >> "${GITHUB_ENV}"
+          echo "ARM_CLIENT_ID=${AZURE_CLIENT_ID}" >> "${GITHUB_ENV}"
+          echo "ARM_TENANT_ID=${AZURE_TENANT_ID}" >> "${GITHUB_ENV}"
+          echo "ARM_SUBSCRIPTION_ID=${AZURE_SUBSCRIPTION_ID}" >> "${GITHUB_ENV}"
+
+          # If your backend uses AzureAD auth scoped to container, this helps avoid ListKeys fallback in some setups
+          echo "ARM_USE_AZUREAD=true" >> "${GITHUB_ENV}"
+      # OIDC backend usage and env vars are discussed in Terraform/AzureRM backend OIDC guidance [6](https://nedinthecloud.com/2022/06/08/using-oidc-authentication-with-the-azurerm-backend/)[8](https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/guides/service_principal_oidc)
 
       #####################################################################
-      # Write input + backend + secrets files (no albertsons actions)
+      # Write input file again (matrix job runs separately)
       #####################################################################
       - name: Write input file
         shell: bash
@@ -143,87 +156,81 @@ jobs:
           ${{ github.event.inputs.tf_resource_json }}
           EOF
 
-      - name: Write nonprod SP tfvars (optional)
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat > "${{ github.workspace }}/secrets.auto.tfvars_nonprod.json" << 'EOF'
-          ${{ secrets.AZ_SP_ESCO_NONPROD }}
-          EOF
-
-      - name: Write nonprod backend
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat > "${{ github.workspace }}/backend_nonprod.json" << 'EOF'
-          ${{ secrets.AZ_BACKEND_ESCO_NONPROD }}
-          EOF
-
-      - name: Write prod SP tfvars (optional)
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat > "${{ github.workspace }}/secrets.auto.tfvars_prod.json" << 'EOF'
-          ${{ secrets.AZ_SP_ESCO_PROD }}
-          EOF
-
-      - name: Write prod backend
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat > "${{ github.workspace }}/backend_prod.json" << 'EOF'
-          ${{ secrets.AZ_BACKEND_ESCO_PROD }}
-          EOF
-
       #####################################################################
-      # Create region-scoped JSON payload (ONE region per job)
+      # Create region-scoped payload (ONE region per job)
       #####################################################################
       - name: Create region-scoped variables file
         shell: bash
         run: |
           set -euo pipefail
-
           REGION="${{ matrix.region }}"
-          echo "Deploying region: ${REGION}"
-
-          jq --arg r "${REGION}" '
-            .regions = { ($r): .regions[$r] }
-          ' "${{ github.workspace }}/input.json" > "${{ github.workspace }}/region.json"
+          jq --arg r "${REGION}" '.regions = { ($r): .regions[$r] }' \
+            "${{ github.workspace }}/input.json" > "${{ github.workspace }}/region.json"
 
       #####################################################################
-      # Terraform init/plan/apply in TF_DIR
+      # Prepare Terraform folder files
+      #####################################################################
+      - name: Prepare TF folder (vars + backend)
+        shell: bash
+        run: |
+          set -euo pipefail
+          TFROOT="${{ github.workspace }}/${{ env.TF_DIR }}"
+          if [ ! -d "${TFROOT}" ]; then
+            echo "ERROR: TF folder not found: ${TFROOT}"
+            exit 1
+          fi
+
+          REGION="${{ matrix.region }}"
+          ENVIRONMENT="$(jq -r '.environment' "${{ github.workspace }}/region.json")"
+
+          # Move region vars into TF folder
+          mv "${{ github.workspace }}/region.json" "${TFROOT}/variables.auto.tfvars.json"
+
+          # ---- Backend config ----
+          # You MUST ensure your TF has backend "azurerm" configured.
+          # Here we create a backend.json on the fly.
+          #
+          # Replace values below with your actual backend storage account config.
+          #
+          # NOTE: We will override only the "key" dynamically in terraform init.
+
+          if [ "${ENVIRONMENT}" = "nonprod" ]; then
+            cat > "${TFROOT}/backend.json" << 'EOF'
+          {
+            "resource_group_name": "rg-tfstate-nonprod",
+            "storage_account_name": "sastatetfnonprod",
+            "container_name": "tfstate"
+          }
+          EOF
+          else
+            cat > "${TFROOT}/backend.json" << 'EOF'
+          {
+            "resource_group_name": "rg-tfstate-prod",
+            "storage_account_name": "sastatetfprod",
+            "container_name": "tfstate"
+          }
+          EOF
+          fi
+
+          echo "TFROOT content:"
+          ls -la "${TFROOT}"
+
+      #####################################################################
+      # Terraform init/plan/apply with 1 state per function app
       #####################################################################
       - name: Terraform Init (per region state)
         shell: bash
         run: |
           set -euo pipefail
-
           TFROOT="${{ github.workspace }}/${{ env.TF_DIR }}"
-          if [ ! -d "${TFROOT}" ]; then
-            echo "ERROR: TF folder not found: ${TFROOT}"
-            echo "Expected: infrastructure/azure-functions-resiliency/linux"
-            exit 1
-          fi
-
-          REGION="${{ matrix.region }}"
-
-          ENVIRONMENT="$(jq -r '.environment' "${{ github.workspace }}/region.json")"
-          APPCODE="$(jq -r '.appcode' "${{ github.workspace }}/region.json")"
-          APPNAME="$(jq -r '.appname' "${{ github.workspace }}/region.json")"
-          FUNCNAME="$(jq -r --arg r "${REGION}" '.regions[$r].function_app_name' "${{ github.workspace }}/region.json")"
-
-          # Move region payload + backend + optional secrets into TF folder
-          mv "${{ github.workspace }}/region.json" "${TFROOT}/variables.auto.tfvars.json"
-          cp "${{ github.workspace }}/backend_${ENVIRONMENT}.json" "${TFROOT}/backend.json"
-
-          # Only copy secrets if file is non-empty (optional)
-          if [ -s "${{ github.workspace }}/secrets.auto.tfvars_${ENVIRONMENT}.json" ]; then
-            cp "${{ github.workspace }}/secrets.auto.tfvars_${ENVIRONMENT}.json" "${TFROOT}/secrets.auto.tfvars.json"
-          fi
-
           cd "${TFROOT}"
 
-          # 1 state file per function app per region
+          REGION="${{ matrix.region }}"
+          ENVIRONMENT="$(jq -r '.environment' variables.auto.tfvars.json)"
+          APPCODE="$(jq -r '.appcode' variables.auto.tfvars.json)"
+          APPNAME="$(jq -r '.appname' variables.auto.tfvars.json)"
+          FUNCNAME="$(jq -r --arg r "${REGION}" '.regions[$r].function_app_name' variables.auto.tfvars.json)"
+
           TERRAFORM_STATE_KEY="esfn/${ENVIRONMENT}/${APPCODE}/${APPNAME}/azfnapp/${REGION}/${FUNCNAME}/terraform.tfstate"
           echo "STATE_KEY=${TERRAFORM_STATE_KEY}"
 
@@ -239,7 +246,6 @@ jobs:
           terraform validate
 
       - name: Terraform Plan
-        id: plan
         shell: bash
         run: |
           set -euo pipefail
