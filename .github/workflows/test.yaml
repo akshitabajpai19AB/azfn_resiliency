@@ -256,6 +256,12 @@ jobs:
           echo "APPCODE=$APPCODE"
           echo "APPNAME=$APPNAME"
 
+          echo "Region object for $REGION:"
+          jq -r --arg r "$REGION" '.regions[$r]' variables.auto.tfvars.json
+
+          echo "Function app name value:"
+          jq -r --arg r "$REGION" '.regions[$r].function_app_name' variables.auto.tfvars.json
+
           echo "---- Extract function app name for region ----"
           FUNCNAME="$(jq -er --arg r "$REGION" '.regions[$r].function_app_name' variables.auto.tfvars.json)"
           echo "FUNCNAME=$FUNCNAME"
