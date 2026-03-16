@@ -54,6 +54,16 @@ variable "tenant_id" {
 # -------------------------
 # Private DNS for Function App Private Endpoint
 # -------------------------
+check "private_dns_inputs" {
+  assert {
+    condition = (
+      var.enforce_private_dns_zone_resolution == false
+      || var.private_dns_zone_id != ""
+      || var.private_dns_zone_rg_name != ""
+    )
+    error_message = "When enforce_private_dns_zone_resolution is true, provide private_dns_zone_id or private_dns_zone_rg_name."
+  }
+}
 variable "private_dns_zone_id" {
   type        = string
   default     = ""
@@ -78,11 +88,6 @@ variable "private_dns_zone_group" {
 variable "enforce_private_dns_zone_resolution" {
   type    = bool
   default = true
-
-  validation {
-    condition     = var.enforce_private_dns_zone_resolution == false || var.private_dns_zone_id != "" || var.private_dns_zone_rg_name != ""
-    error_message = "Set private_dns_zone_id or private_dns_zone_rg_name (or disable enforce_private_dns_zone_resolution)."
-  }
 }
 
 # -------------------------
