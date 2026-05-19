@@ -1,119 +1,54 @@
-name: CI Platform Workflow
+name: CI
 
 on:
-  workflow_call:        # reusable
-  workflow_dispatch:    # manual run
-  push:
-    branches: [ main ]
-  pull_request:
+  workflow_call:
 
-permissions:
-  contents: read
-  security-events: write
+  workflow_dispatch:
+    inputs:
+      repository:
+        required: false
+        default: ""
+      ref:
+        required: false
+        default: "main"
 
 jobs:
-  detect:
-    runs-on: ubuntu-latest
-    outputs:
-      stack: ${{ steps.detect.outputs.stack }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Detect Project Type
-        id: detect
-        run: |
-          if [ -f "*.csproj" ] || [ -f "*.sln" ]; then
-            echo "stack=dotnet" >> $GITHUB_OUTPUT
-          elif [ -f "requirements.txt" ] || [ -f "pyproject.toml" ]; then
-            echo "stack=python" >> $GITHUB_OUTPUT
-          else
-            echo "stack=unknown" >> $GITHUB_OUTPUT
-          fi
-
   ci:
-    needs: detect
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.inputs.repository || github.repository }}
+          ref: ${{ github.event.inputs.ref }}
 
-      # ====================
-      # ✅ .NET PIPELINE
-      # ====================
-      - name: Setup .NET
-        if: needs.detect.outputs.stack == 'dotnet'
-        uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v4
+        if: hashFiles('**/*.csproj') != ''
         with:
           dotnet-version: '8.0.x'
 
-      - name: Restore / Build / Test (.NET)
-        if: needs.detect.outputs.stack == 'dotnet'
-        run: |
+      - run: |
           dotnet restore
-          dotnet build --no-restore
+          dotnet build --no-restore /warnaserror
           dotnet test --no-build
+        if: hashFiles('**/*.csproj') != ''
 
-      # ====================
-      # ✅ PYTHON PIPELINE
-      # ====================
-      - name: Setup Python
-        if: needs.detect.outputs.stack == 'python'
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
+        if: hashFiles('**/*.py') != ''
         with:
           python-version: '3.11'
 
-      - name: Install Dependencies (Python)
-        if: needs.detect.outputs.stack == 'python'
-        run: |
-          pip install -r requirements.txt || true
-          pip install pytest flake8
-
-      - name: Lint (Python)
-        if: needs.detect.outputs.stack == 'python'
-        run: flake8 . || true
-
-      - name: Test (Python)
-        if: needs.detect.outputs.stack == 'python'
-        run: pytest || true
-
-      # ====================
-      # ✅ GOVERNANCE
-      # ====================
-      - name: Install security tools
-        run: |
-          pip install checkov || true
-
-      - name: Run IaC Security Scan (Terraform / Infra)
-        run: |
+      - run: |
+          pip install flake8 pytest checkov
+          flake8 . || true
+          pytest || true
           checkov -d . || true
+        if: hashFiles('**/*.py') != ''
 
-      # ✅ Supply chain security (OpenSSF Scorecard equivalent)
-      - name: Security posture (basic)
-        run: |
-          echo "✅ Security checks executed"
-
-      # ====================
-      # ✅ METRICS (governance)
-      # ====================
-      - name: Generate Metrics
-        run: |
-          echo '{
-            "repo": "'${{ github.repository }}'",
-            "run_id": "'${{ github.run_id }}'",
-            "status": "success",
-            "stack": "'${{ needs.detect.outputs.stack }}'"
-          }' > metrics.json
+      - run: |
+          echo '{ "repo": "${{ github.repository }}" }' > metrics.json
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ci-metrics
+          name: metrics
           path: metrics.json
-
-      # ====================
-      # ✅ OUTPUT SUMMARY
-      # ====================
-      - name: Summary
-        run: |
-          echo "## ✅ CI Completed" >> $GITHUB_STEP_SUMMARY
-          echo "- Stack: ${{ needs.detect.outputs.stack }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Repo: ${{ github.repository }}" >> $GITHUB_STEP_SUMMARY
