@@ -1,0 +1,196 @@
+name: reusable-ci
+
+on:
+  workflow_call:
+    inputs:
+      stack:
+        description: "tech stack selector: node | python | dotnet | java | terraform | generic"
+        required: true
+        type: string
+      run_tests:
+        required: false
+        type: boolean
+        default: true
+      run_lint:
+        required: false
+        type: boolean
+        default: true
+      run_security:
+        required: false
+        type: boolean
+        default: true
+      node_version:
+        required: false
+        type: string
+        default: "20"
+      python_version:
+        required: false
+        type: string
+        default: "3.11"
+      dotnet_version:
+        required: false
+        type: string
+        default: "8.0.x"
+      java_version:
+        required: false
+        type: string
+        default: "21"
+      terraform_version:
+        required: false
+        type: string
+        default: "1.8.5"
+    outputs:
+      metrics_artifact:
+        description: "Name of the metrics artifact"
+        value: ${{ jobs.ci.outputs.metrics_artifact }}
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: CI
+    runs-on: ubuntu-latest
+    outputs:
+      metrics_artifact: ci-metrics-${{ github.run_id }}
+
+    permissions:
+      contents: read
+      security-events: write   # needed if you upload SARIF (CodeQL/Scorecard/etc.)
+      actions: read            # useful for some metrics collection
+      checks: write            # if you publish check runs (optional)
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ---- Node ----
+      - name: Setup Node
+        if: ${{ inputs.stack == 'node' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: npm
+
+      - name: Node - install
+        if: ${{ inputs.stack == 'node' }}
+        run: npm ci
+
+      - name: Node - lint
+        if: ${{ inputs.stack == 'node' && inputs.run_lint }}
+        run: npm run lint --if-present
+
+      - name: Node - test
+        if: ${{ inputs.stack == 'node' && inputs.run_tests }}
+        run: npm test --if-present
+
+      # ---- Python ----
+      - name: Setup Python
+        if: ${{ inputs.stack == 'python' }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python_version }}
+          cache: pip
+
+      - name: Python - install
+        if: ${{ inputs.stack == 'python' }}
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Python - lint
+        if: ${{ inputs.stack == 'python' && inputs.run_lint }}
+        run: |
+          if [ -f pyproject.toml ] || [ -f setup.cfg ]; then python -m pip install ruff; ruff check .; fi
+
+      - name: Python - test
+        if: ${{ inputs.stack == 'python' && inputs.run_tests }}
+        run: |
+          if [ -d tests ] || [ -f pytest.ini ]; then python -m pip install pytest; pytest -q; fi
+
+      # ---- .NET ----
+      - name: Setup .NET
+        if: ${{ inputs.stack == 'dotnet' }}
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ inputs.dotnet_version }}
+
+      - name: .NET - restore/build/test
+        if: ${{ inputs.stack == 'dotnet' }}
+        run: |
+          dotnet restore
+          dotnet build -c Release --no-restore
+          if [ "${{ inputs.run_tests }}" = "true" ]; then dotnet test -c Release --no-build; fi
+
+      # ---- Java ----
+      - name: Setup Java
+        if: ${{ inputs.stack == 'java' }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.java_version }}
+          cache: maven
+
+      - name: Java - build/test
+        if: ${{ inputs.stack == 'java' }}
+        run: |
+          if [ -f mvnw ]; then chmod +x mvnw; ./mvnw -q -DskipTests=${{ inputs.run_tests == false }} test; else mvn -q -DskipTests=${{ inputs.run_tests == false }} test; fi
+
+      # ---- Terraform (fmt/lint/validate/scan/plan style) ----
+      - name: Setup Terraform
+        if: ${{ inputs.stack == 'terraform' }}
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ inputs.terraform_version }}
+
+      - name: Terraform - fmt
+        if: ${{ inputs.stack == 'terraform' }}
+        run: terraform fmt -check -recursive
+
+      - name: Terraform - init/validate
+        if: ${{ inputs.stack == 'terraform' }}
+        run: |
+          terraform init -backend=false
+          terraform validate
+
+      # Optional: add tflint/checkov etc (aligns with platform PR checks pattern)
+      - name: Terraform - security scan (example)
+        if: ${{ inputs.stack == 'terraform' && inputs.run_security }}
+        run: |
+          echo "Add your org-approved scanner here (e.g., Checkov) per governance policy."
+
+      # ---- Governance metrics artifact (simple, universal) ----
+      - name: Build CI metrics JSON
+        shell: bash
+        run: |
+          cat > ci-metrics.json << 'EOF'
+          {
+            "repo": "${{ github.repository }}",
+            "ref": "${{ github.ref }}",
+            "sha": "${{ github.sha }}",
+            "run_id": "${{ github.run_id }}",
+            "run_number": "${{ github.run_number }}",
+            "workflow": "${{ github.workflow }}",
+            "stack": "${{ inputs.stack }}",
+            "run_tests": "${{ inputs.run_tests }}",
+            "run_lint": "${{ inputs.run_lint }}",
+            "run_security": "${{ inputs.run_security }}"
+          }
+          EOF
+
+      - name: Upload metrics artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-metrics-${{ github.run_id }}
+          path: ci-metrics.json
+          retention-days: 14
+
+      - name: Job summary
+        run: |
+          {
+            echo "## CI Summary"
+            echo "- Stack: **${{ inputs.stack }}**"
+            echo "- Repo: **${{ github.repository }}**"
+            echo "- SHA: **${{ github.sha }}**"
+            echo "- Metrics artifact: **ci-metrics-${{ github.run_id }}**"
+          } >> "$GITHUB_STEP_SUMMARY"
