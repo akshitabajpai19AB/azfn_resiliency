@@ -12,6 +12,11 @@ on:
         required: false
         default: "main"
 
+  push:
+    branches: [ main ]
+
+  pull_request:
+
 jobs:
   ci:
     runs-on: ubuntu-latest
